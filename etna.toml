@@ -1,0 +1,23 @@
+# ETNA workload index for buf-list.
+#
+# One [[variant]] per injected mutation. Source of truth for variant->property
+# mapping. Every other fact is derivable from the source tree:
+#   - ls patches/*.patch                          (patch-based variants)
+#   - grep -rn "pub fn property_" src/etna.rs     (property functions)
+#   - grep -rn "fn witness_.*_case_" tests/       (witness tests)
+#
+# Base commit for this workload is HEAD of master on this tree. Every
+# etna/<variant> branch is master + exactly one patch applied on top.
+
+[[variant]]
+name = "read_exact_pos_on_eof_b58396d_1"
+property = "read_exact_pos_on_eof"
+injection = "patch"
+patch = "patches/read_exact_pos_on_eof_b58396d_1.patch"
+source_commit = "b58396d3aadd4c91086c94feb5ef5a29465b7d86"
+witnesses = [
+    "witness_read_exact_pos_on_eof_case_multi_chunk_from_start",
+    "witness_read_exact_pos_on_eof_case_mid_buffer_start",
+]
+frameworks = ["proptest", "quickcheck", "crabcheck", "hegel"]
+files = ["src/cursor/mod.rs"]

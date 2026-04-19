@@ -121,6 +121,7 @@
 
 mod cursor;
 pub(crate) mod errors;
+pub mod etna;
 mod imp;
 
 pub use cursor::*;

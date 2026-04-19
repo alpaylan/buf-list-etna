@@ -21,12 +21,15 @@ rustdoc-args = ["--cfg=doc_cfg"]
 bytes = "1.3.0"
 futures-io-03 = { package = "futures-io", version = "0.3.25", optional = true }
 tokio = { version = "1.0.0", features = ["io-std"], optional = true }
+proptest = "1"
+quickcheck = { path = "/Users/akeles/Programming/projects/PbtBenchmark/quickcheck", features = ["etna"] }
+crabcheck = { path = "/Users/akeles/Programming/projects/PbtBenchmark/crabcheck" }
+hegeltest = "0.3.7"
 
 [dev-dependencies]
 anyhow = "1.0.70"
 dummy-waker = "1.1.0"
 futures = "0.3.25"
-hegeltest = "0.3.7"
 tokio = { version = "1.0.0", features = ["io-std", "io-util", "macros", "rt"] }
 
 [features]
