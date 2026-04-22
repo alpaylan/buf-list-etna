@@ -1,23 +1,31 @@
-# ETNA workload index for buf-list.
-#
-# One [[variant]] per injected mutation. Source of truth for variant->property
-# mapping. Every other fact is derivable from the source tree:
-#   - ls patches/*.patch                          (patch-based variants)
-#   - grep -rn "pub fn property_" src/etna.rs     (property functions)
-#   - grep -rn "fn witness_.*_case_" tests/       (witness tests)
-#
-# Base commit for this workload is HEAD of master on this tree. Every
-# etna/<variant> branch is master + exactly one patch applied on top.
+name = "buf-list"
+language = "rust"
+crate = "buf-list"
+base_commit = "c3220aba064d8bc70e22f026f740bb3aa39d7f43"
 
-[[variant]]
-name = "read_exact_pos_on_eof_b58396d_1"
-property = "read_exact_pos_on_eof"
-injection = "patch"
-patch = "patches/read_exact_pos_on_eof_b58396d_1.patch"
-source_commit = "b58396d3aadd4c91086c94feb5ef5a29465b7d86"
-witnesses = [
-    "witness_read_exact_pos_on_eof_case_multi_chunk_from_start",
-    "witness_read_exact_pos_on_eof_case_mid_buffer_start",
-]
-frameworks = ["proptest", "quickcheck", "crabcheck", "hegel"]
+[[tasks]]
+mutations = ["read_exact_pos_on_eof_b58396d_1"]
+
+[tasks.source]
+repo = "https://github.com/sunshowers-code/buf-list"
+commits = ["b58396d3aadd4c91086c94feb5ef5a29465b7d86"]
+commit_subjects = ["try and fix build (#11)"]
+summary = "Rust 1.80 (rust-lang/rust#125404) changed `std::io::Cursor<&[u8]>::read_exact` to advance the cursor position to the end of the buffer when it errors with `UnexpectedEof`. `buf-list::Cursor` had kept the old pre-1.80 behavior, leaving `pos` unchanged on short reads and diverging from the standard cursor."
+
+[tasks.injection]
+kind = "patch"
 files = ["src/cursor/mod.rs"]
+locations = [{ file = "src/cursor/mod.rs" }]
+patch = "patches/read_exact_pos_on_eof_b58396d_1.patch"
+
+[tasks.bug]
+short_name = "read_exact_pos_on_eof"
+invariant = "After `Cursor::read_exact` fails with `UnexpectedEof` (requested more bytes than remain), the cursor's `position()` must equal the total number of bytes in the `BufList`, matching `std::io::Cursor<&[u8]>::read_exact` on Rust ≥ 1.80 (rust-lang/rust#125404)."
+how_triggered = "The patch removes the `self.set_pos(list, total);` call inside `CursorData::read_exact_impl`, so when the read_exact path errors out the cursor position remains wherever the caller set it rather than advancing to the end of the buffer."
+
+[[tasks.tasks]]
+property = "ReadExactPosOnEof"
+witnesses = [
+  { test_fn = "witness_read_exact_pos_on_eof_case_multi_chunk_from_start" },
+  { test_fn = "witness_read_exact_pos_on_eof_case_mid_buffer_start" },
+]
