@@ -1,5 +1,6 @@
 name = "buf-list"
 language = "rust"
+strategies = ["proptest", "quickcheck", "crabcheck", "hegel"]
 crate = "buf-list"
 base_commit = "c3220aba064d8bc70e22f026f740bb3aa39d7f43"
 
