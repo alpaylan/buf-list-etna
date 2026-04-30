@@ -22,8 +22,8 @@ bytes = "1.3.0"
 futures-io-03 = { package = "futures-io", version = "0.3.25", optional = true }
 tokio = { version = "1.0.0", features = ["io-std"], optional = true }
 proptest = "1"
-quickcheck = { path = "/Users/akeles/Programming/projects/PbtBenchmark/quickcheck", features = ["etna"] }
-crabcheck = { path = "/Users/akeles/Programming/projects/PbtBenchmark/crabcheck" }
+quickcheck = { git = "https://github.com/alpaylan/quickcheck.git", branch = "master", features = ["etna"] }
+crabcheck = { git = "https://github.com/alpaylan/crabcheck.git", branch = "main" }
 hegeltest = "0.3.7"
 
 [dev-dependencies]
