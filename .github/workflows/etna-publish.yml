@@ -2,7 +2,7 @@ name: Publish experiment results
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths-ignore:
       - '**.md'
       - '.github/**'
