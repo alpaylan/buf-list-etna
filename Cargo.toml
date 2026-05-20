@@ -25,6 +25,7 @@ proptest = "1"
 quickcheck = { git = "https://github.com/alpaylan/quickcheck.git", branch = "master", features = ["etna"] }
 crabcheck = { git = "https://github.com/alpaylan/crabcheck.git", branch = "main" }
 hegeltest = "0.3.7"
+rand = "0.9"
 
 [dev-dependencies]
 anyhow = "1.0.70"
@@ -35,3 +36,7 @@ tokio = { version = "1.0.0", features = ["io-std", "io-util", "macros", "rt"] }
 [features]
 futures03 = ["futures-io-03"]
 tokio1 = ["tokio"]
+
+[[bin]]
+name = "etna-faultloc"
+path = "src/bin/etna-faultloc.rs"

@@ -9,10 +9,13 @@
 
 use buf_list::etna::{property_read_exact_pos_on_eof, PropertyResult};
 use crabcheck::quickcheck as crabcheck_qc;
+use crabcheck::quickcheck::Arbitrary as CcArbitrary;
 use hegel::{generators as hgen, Hegel, Settings as HegelSettings};
 use proptest::prelude::*;
-use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestRunner};
-use quickcheck::{QuickCheck, ResultStatus, TestResult};
+use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestError, TestRunner};
+use quickcheck::{Arbitrary as QcArbitrary, Gen, QuickCheck, ResultStatus, TestResult};
+use rand::Rng;
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -83,6 +86,57 @@ fn run_etna_property(property: &str) -> Outcome {
     (result, Metrics { inputs: 1, elapsed_us })
 }
 
+// ───────────── shared generator: Chunks ─────────────
+//
+// Target shape matches proptest: `vec(vec(any::<u8>(), 0..16), 0..8)` —
+// outer length 0..=7, inner length 0..=15, elements uniform over all u8.
+#[derive(Clone)]
+struct Chunks(Vec<Vec<u8>>);
+
+impl fmt::Debug for Chunks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Display for Chunks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl QcArbitrary for Chunks {
+    fn arbitrary(g: &mut Gen) -> Self {
+        let outer = g.random_range(0..8u32) as usize;
+        let mut out = Vec::with_capacity(outer);
+        for _ in 0..outer {
+            let inner = g.random_range(0..16u32) as usize;
+            let mut chunk = Vec::with_capacity(inner);
+            for _ in 0..inner {
+                chunk.push(g.random_range(0..=u8::MAX));
+            }
+            out.push(chunk);
+        }
+        Chunks(out)
+    }
+}
+
+impl<R: Rng> CcArbitrary<R> for Chunks {
+    fn generate(rng: &mut R, _n: usize) -> Self {
+        let outer = rng.random_range(0..8u32) as usize;
+        let mut out = Vec::with_capacity(outer);
+        for _ in 0..outer {
+            let inner = rng.random_range(0..16u32) as usize;
+            let mut chunk = Vec::with_capacity(inner);
+            for _ in 0..inner {
+                chunk.push(rng.random_range(0..=u8::MAX));
+            }
+            out.push(chunk);
+        }
+        Chunks(out)
+    }
+}
+
 // ───────────── proptest ─────────────
 fn chunks_strategy() -> BoxedStrategy<Vec<Vec<u8>>> {
     prop::collection::vec(prop::collection::vec(any::<u8>(), 0..16), 0..8).boxed()
@@ -94,22 +148,29 @@ fn run_proptest_property(property: &str) -> Outcome {
     }
     let counter = Arc::new(AtomicU64::new(0));
     let t0 = Instant::now();
-    let mut runner = TestRunner::new(ProptestConfig::default());
+    let cfg = ProptestConfig { cases: 40_000_000, ..ProptestConfig::default() };
+    let mut runner = TestRunner::new(cfg);
     let result: Result<(), String> = match property {
         "ReadExactPosOnEof" => {
             let c = counter.clone();
-            runner
-                .run(
-                    &(chunks_strategy(), any::<u32>(), any::<u32>()),
-                    move |(chunks, start_pos, extra)| {
-                        c.fetch_add(1, Ordering::Relaxed);
-                        match property_read_exact_pos_on_eof(chunks, start_pos, extra) {
-                            PropertyResult::Pass | PropertyResult::Discard => Ok(()),
-                            PropertyResult::Fail(m) => Err(TestCaseError::fail(m)),
-                        }
-                    },
-                )
-                .map_err(|e| e.to_string())
+            let outcome = runner.run(
+                &(chunks_strategy(), any::<u32>(), any::<u32>()),
+                move |(chunks, start_pos, extra)| {
+                    c.fetch_add(1, Ordering::Relaxed);
+                    match property_read_exact_pos_on_eof(chunks.clone(), start_pos, extra) {
+                        PropertyResult::Pass | PropertyResult::Discard => Ok(()),
+                        PropertyResult::Fail(_) => Err(TestCaseError::fail(format!(
+                            "({:?} {} {})",
+                            chunks, start_pos, extra
+                        ))),
+                    }
+                },
+            );
+            match outcome {
+                Ok(()) => Ok(()),
+                Err(TestError::Fail(reason, _)) => Err(reason.to_string()),
+                Err(e) => Err(e.to_string()),
+            }
         }
         _ => {
             return (
@@ -124,37 +185,11 @@ fn run_proptest_property(property: &str) -> Outcome {
 }
 
 // ───────────── quickcheck (fork with `etna` feature) ─────────────
-//
-// The etna feature on QuickCheck's Testable impl requires `Display` on every
-// argument, which `Vec<Vec<u8>>` does not implement. Take scalar seeds and
-// expand them deterministically — same trick as the other workloads in this
-// benchmark.
 static QC_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn seed_to_chunks(seed: u64) -> Vec<Vec<u8>> {
-    let n = ((seed >> 60) as usize) % 5 + 1;
-    let mut out = Vec::with_capacity(n);
-    let mut s = seed;
-    for _ in 0..n {
-        s = s
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let clen = ((s >> 58) as usize) % 8 + 1;
-        let mut chunk = Vec::with_capacity(clen);
-        for _ in 0..clen {
-            s = s
-                .wrapping_mul(2862933555777941757)
-                .wrapping_add(3037000493);
-            chunk.push((s >> 33) as u8);
-        }
-        out.push(chunk);
-    }
-    out
-}
-
-fn qc_read_exact_pos_on_eof(seed: u64, start: u32, extra: u32) -> TestResult {
+fn qc_read_exact_pos_on_eof(Chunks(chunks): Chunks, start: u32, extra: u32) -> TestResult {
     QC_COUNTER.fetch_add(1, Ordering::Relaxed);
-    match property_read_exact_pos_on_eof(seed_to_chunks(seed), start, extra) {
+    match property_read_exact_pos_on_eof(chunks, start, extra) {
         PropertyResult::Pass => TestResult::passed(),
         PropertyResult::Discard => TestResult::discard(),
         PropertyResult::Fail(_) => TestResult::failed(),
@@ -167,10 +202,10 @@ fn run_quickcheck_property(property: &str) -> Outcome {
     }
     QC_COUNTER.store(0, Ordering::Relaxed);
     let t0 = Instant::now();
-    let mut qc = QuickCheck::new().tests(200).max_tests(2000);
+    let mut qc = QuickCheck::new().tests(40_000_000).max_tests(80_000_000);
     let result = match property {
         "ReadExactPosOnEof" => qc.quicktest(
-            qc_read_exact_pos_on_eof as fn(u64, u32, u32) -> TestResult,
+            qc_read_exact_pos_on_eof as fn(Chunks, u32, u32) -> TestResult,
         ),
         _ => {
             return (
@@ -184,10 +219,7 @@ fn run_quickcheck_property(property: &str) -> Outcome {
     let metrics = Metrics { inputs, elapsed_us };
     let status = match result.status {
         ResultStatus::Finished => Ok(()),
-        ResultStatus::Failed { arguments } => Err(format!(
-            "quickcheck counterexample: ({})",
-            arguments.join(" ")
-        )),
+        ResultStatus::Failed { arguments } => Err(format!("({})", arguments.join(" "))),
         ResultStatus::Aborted { err } => Err(format!("quickcheck aborted: {err:?}")),
         ResultStatus::TimedOut => Err("quickcheck timed out".into()),
         ResultStatus::GaveUp => Err(format!(
@@ -201,29 +233,11 @@ fn run_quickcheck_property(property: &str) -> Outcome {
 // ───────────── crabcheck ─────────────
 static CC_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn usize_to_u8(x: usize) -> u8 {
-    // Same multiplicative-hash trick as rust-csv to spread small usizes
-    // (crabcheck's Arbitrary<usize> tends to stay in 0..~14) across the
-    // full byte range.
-    let h = (x as u32).wrapping_mul(2654435761);
-    (h >> 24) as u8
-}
-
-fn nested_usize_to_u8(v: Vec<Vec<usize>>) -> Vec<Vec<u8>> {
-    v.into_iter()
-        .map(|c| c.into_iter().map(usize_to_u8).collect())
-        .collect()
-}
-
 fn cc_read_exact_pos_on_eof(
-    (chunks, start, extra): (Vec<Vec<usize>>, usize, usize),
+    (Chunks(chunks), start, extra): (Chunks, u32, u32),
 ) -> Option<bool> {
     CC_COUNTER.fetch_add(1, Ordering::Relaxed);
-    match property_read_exact_pos_on_eof(
-        nested_usize_to_u8(chunks),
-        start as u32,
-        extra as u32,
-    ) {
+    match property_read_exact_pos_on_eof(chunks, start, extra) {
         PropertyResult::Pass => Some(true),
         PropertyResult::Fail(_) => Some(false),
         PropertyResult::Discard => None,
@@ -250,10 +264,9 @@ fn run_crabcheck_property(property: &str) -> Outcome {
     let metrics = Metrics { inputs, elapsed_us };
     let status = match result.status {
         crabcheck_qc::ResultStatus::Finished => Ok(()),
-        crabcheck_qc::ResultStatus::Failed { arguments } => Err(format!(
-            "crabcheck counterexample: ({})",
-            arguments.join(" ")
-        )),
+        crabcheck_qc::ResultStatus::Failed { arguments } => {
+            Err(format!("({})", arguments.join(" ")))
+        },
         crabcheck_qc::ResultStatus::TimedOut => Err("crabcheck timed out".into()),
         crabcheck_qc::ResultStatus::GaveUp => Err(format!(
             "crabcheck gave up: passed={}, discarded={}",
@@ -270,7 +283,7 @@ fn run_crabcheck_property(property: &str) -> Outcome {
 static HG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn hegel_settings() -> HegelSettings {
-    HegelSettings::new().test_cases(200).seed(Some(0xBF10_51EE))
+    HegelSettings::new().test_cases(40_000_000)
 }
 
 fn run_hegel_property(property: &str) -> Outcome {
@@ -284,15 +297,16 @@ fn run_hegel_property(property: &str) -> Outcome {
         "ReadExactPosOnEof" => {
             Hegel::new(|tc: hegel::TestCase| {
                 HG_COUNTER.fetch_add(1, Ordering::Relaxed);
+                // Match proptest: outer 0..=7, inner 0..=15, any u8.
                 let chunks: Vec<Vec<u8>> = tc.draw(
-                    hgen::vecs(hgen::vecs(hgen::integers::<u8>()).max_size(12)).max_size(6),
+                    hgen::vecs(hgen::vecs(hgen::integers::<u8>()).max_size(15)).max_size(7),
                 );
                 let start: u32 = tc.draw(hgen::integers::<u32>());
                 let extra: u32 = tc.draw(hgen::integers::<u32>());
-                if let PropertyResult::Fail(m) =
-                    property_read_exact_pos_on_eof(chunks, start, extra)
+                if let PropertyResult::Fail(_) =
+                    property_read_exact_pos_on_eof(chunks.clone(), start, extra)
                 {
-                    panic!("{m}");
+                    panic!("({:?} {} {})", chunks, start, extra);
                 }
             })
             .settings(settings.clone())
@@ -319,7 +333,10 @@ fn run_hegel_property(property: &str) -> Outcome {
                     Metrics::default(),
                 );
             }
-            Err(format!("hegel found counterexample: {msg}"))
+            // hegeltest wraps the inner panic payload in "Property test failed: <msg>";
+            // strip it so the counterexample matches the canonical (a b c) form.
+            let msg = msg.strip_prefix("Property test failed: ").unwrap_or(&msg).to_string();
+            Err(msg)
         }
     };
     (status, metrics)
